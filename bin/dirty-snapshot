@@ -1,0 +1,61 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+require_relative "../lib/ai_harness_governance/dirty_snapshot"
+
+options = {
+  globs: [],
+  plan_paths: [],
+  digest_only: false
+}
+
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: ruby bin/dirty-snapshot --worktree PATH [options]"
+  opts.on("--worktree PATH", "Git worktree to inspect") { |value| options[:worktree] = value }
+  opts.on("--scope GLOB", "Include a scope glob (repeatable)") { |value| options[:globs] << value }
+  opts.on("--plan-path PATH", "Include an exact plan target and the harness allowlist") do |value|
+    options[:plan_paths] << value
+  end
+  opts.on("--digest-only", "Print only the digest") { options[:digest_only] = true }
+end
+
+begin
+  parser.parse!(ARGV)
+  raise OptionParser::MissingArgument, "--worktree" unless options[:worktree]
+  raise OptionParser::InvalidArgument, ARGV.join(" ") unless ARGV.empty?
+
+  scope = if options[:plan_paths].empty? && options[:globs].empty?
+            AIHarnessGovernance::DirtySnapshot::Scope.all
+          elsif options[:plan_paths].empty?
+            AIHarnessGovernance::DirtySnapshot::Scope.custom(options[:globs])
+          else
+            AIHarnessGovernance::DirtySnapshot::Scope.plan(
+              options[:plan_paths],
+              options[:globs]
+            )
+          end
+  result = AIHarnessGovernance::DirtySnapshot.new(options[:worktree], scope).calculate
+
+  if options[:digest_only]
+    puts result.digest
+  else
+    puts JSON.generate(
+      "dirty_snapshot_algo" => result.algorithm,
+      "dirty_snapshot_digest" => result.digest,
+      "dirty_snapshot_scope" => result.scope.to_h,
+      "entry_count" => result.entries.length
+    )
+  end
+rescue OptionParser::ParseError => error
+  warn "error: #{error.message}"
+  warn parser
+  exit 2
+rescue AIHarnessGovernance::CommandError, ArgumentError
+  warn "error: dirty snapshot failed"
+  exit 3
+rescue StandardError
+  warn "error: dirty snapshot failed"
+  exit 3
+end

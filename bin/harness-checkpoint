@@ -1,0 +1,71 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+require_relative "../lib/ai_harness_governance/checkpoint"
+
+command = ARGV.shift
+
+begin
+  case command
+  when "create"
+    options = { archive_root: File.join(Dir.home, "orca-harness-checkpoints") }
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: ruby bin/harness-checkpoint create --worktree PATH --index FILE [options]"
+      opts.on("--worktree PATH", "Git worktree to checkpoint") { |value| options[:worktree] = value }
+      opts.on("--archive-root PATH", "External archive root") { |value| options[:archive_root] = value }
+      opts.on("--index FILE", "JSON checkpoint index") { |value| options[:index_path] = value }
+      opts.on("--timestamp VALUE", "Safe unique timestamp override") { |value| options[:timestamp] = value }
+      opts.on("--expected-dirty-snapshot-digest SHA256", "Approved algo 4 dirty digest") do |value|
+        options[:expected_dirty_snapshot_digest] = value
+      end
+      opts.on("--expected-head OID", "Approved HEAD object ID") { |value| options[:expected_head] = value }
+      opts.on("--expected-branch NAME", "Approved branch name") { |value| options[:expected_branch] = value }
+      opts.on("--expect-detached", "Approved state is detached HEAD") { options[:expected_branch] = nil }
+    end
+    parser.parse!(ARGV)
+    raise OptionParser::MissingArgument, "--worktree" unless options[:worktree]
+    raise OptionParser::MissingArgument, "--index" unless options[:index_path]
+    raise OptionParser::InvalidArgument, ARGV.join(" ") unless ARGV.empty?
+
+    record = AIHarnessGovernance::Checkpoint.new(**options).create
+    puts JSON.generate(
+      "status" => "created",
+      "worktree_id" => record.fetch("worktree_id"),
+      "checkpoint_ref" => record.fetch("checkpoint_ref"),
+      "archive_created" => !record["untracked_archive"].nil?,
+      "restore_verified" => record.fetch("restore_verified")
+    )
+  when "verify"
+    options = {}
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: ruby bin/harness-checkpoint verify --index FILE [options]"
+      opts.on("--index FILE", "JSON checkpoint index") { |value| options[:index_path] = value }
+      opts.on("--worktree-id ID", "Verify one indexed worktree") { |value| options[:worktree_id] = value }
+    end
+    parser.parse!(ARGV)
+    raise OptionParser::MissingArgument, "--index" unless options[:index_path]
+    raise OptionParser::InvalidArgument, ARGV.join(" ") unless ARGV.empty?
+
+    count = AIHarnessGovernance::Checkpoint.verify_index(
+      options[:index_path],
+      options[:worktree_id]
+    )
+    puts JSON.generate("status" => "verified", "verified_count" => count)
+  else
+    warn "error: expected create or verify"
+    exit 2
+  end
+rescue OptionParser::ParseError => error
+  warn "error: #{error.message}"
+  warn parser
+  exit 2
+rescue AIHarnessGovernance::CommandError, ArgumentError, KeyError, TypeError
+  # Do not print child diagnostics, file names, archive members, or file content.
+  warn "error: checkpoint operation failed"
+  exit 3
+rescue StandardError
+  warn "error: checkpoint operation failed"
+  exit 3
+end
